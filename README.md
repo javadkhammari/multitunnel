@@ -8,6 +8,25 @@ It sits in front of your existing service (OpenVPN, WireGuard, Xray, or anything
 user → fixed port on entry server → MultiTunnel → relay(s) → final server → OpenVPN / WireGuard / Xray
 ```
 
+<p align="center">
+  <img src="docs/pair-selftest.svg" alt="Generating deployment bundles and running real end-to-end self-tests" width="100%">
+</p>
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U(["Users"]) -->|"fixed port :9001"| E["Entry server<br/>MultiTunnel"]
+    E -->|"TLS / MTLS / WSS / QUIC / KCP / DTLS"| R1["Relay 1"]
+    E -.->|"round-robin / failover"| R2["Relay 2"]
+    R1 --> F1["Final 1<br/>OpenVPN · WireGuard · Xray"]
+    R1 --> F2["Final 2"]
+    R2 --> F1
+    R2 --> F2
+```
+
+Each deployment has its own private CA. Every server receives a bundle with only its own certificate and key, and each service runs as a separate hardened systemd unit.
+
 ## Highlights
 
 - **Two engines, many transports.** GOST (TLS, multiplexed TLS, WSS, multiplexed WSS, QUIC, encrypted KCP, DTLS) and FRP (TCP, KCP, QUIC and WebSocket, all with mutual TLS).
@@ -57,27 +76,9 @@ sudo multitunnel install-engine frp
 sudo multitunnel
 ```
 
-```text
-MultiTunnel Relay Manager 2.2.0
-1) Initialize node
-2) Create deployment bundles (guided wizard)
-3) Install GOST
-4) Install FRP
-5) Import service bundle
-6) List services
-7) Edit service
-8) Enable or disable service
-9) Remove service
-10) Rebuild or restart services
-11) Status and logs
-12) Health check
-13) Doctor and validation
-14) Real end-to-end self-test
-15) Export configuration backup
-16) Restore backup
-17) Uninstall manager
-0) Exit
-```
+<p align="center">
+  <img src="docs/menu.svg" alt="MultiTunnel interactive menu" width="60%">
+</p>
 
 The wizard (option 2) has presets for OpenVPN TCP, OpenVPN UDP, WireGuard, Xray and custom services. It walks you through engine, transport, ports, destination and server pool, then shows a summary before generating anything.
 
