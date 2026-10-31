@@ -255,4 +255,4 @@ See [SECURITY.md](SECURITY.md) for how to handle bundles and backups.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
