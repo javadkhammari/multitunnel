@@ -37,7 +37,7 @@ Each deployment has its own private CA. Every server receives a bundle with only
 - **Real end-to-end self-test.** It launches both ends of the tunnel locally and pushes random data through it.
 - **Hardened services.** One systemd unit per service, a dedicated unprivileged `mtunnel` user, systemd sandboxing and `0600` private keys.
 - **Pinned engine downloads.** Official GOST/FRP releases are verified against pinned SHA256 checksums before installation.
-- **Interactive menu** with a guided wizard, plus a full CLI for scripting.
+- **Interactive menu** with a guided wizard, plus a full CLI for scripting. Colored output and status badges on interactive terminals, plain `[OK]`/`[ERR]` tags when piped or logged.
 
 ## Requirements
 
@@ -79,6 +79,8 @@ sudo multitunnel
 <p align="center">
   <img src="docs/menu.svg" alt="MultiTunnel interactive menu" width="60%">
 </p>
+
+The header shows the node role, installed engines and how many services are running. The menu switches to a single column on narrow terminals (for example, SSH from a phone).
 
 The wizard (option 2) has presets for OpenVPN TCP, OpenVPN UDP, WireGuard, Xray and custom services. It walks you through engine, transport, ports, destination and server pool, then shows a summary before generating anything.
 
@@ -188,8 +190,13 @@ sudo multitunnel selftest --engine all
 
 ## Day-to-day commands
 
+<p align="center">
+  <img src="docs/services.svg" alt="multitunnel show and doctor output" width="90%">
+</p>
+
 ```bash
-sudo multitunnel show
+sudo multitunnel show            # table view, secrets hidden
+sudo multitunnel show --json     # full definitions, including secrets
 sudo multitunnel status
 sudo multitunnel health
 sudo multitunnel doctor
@@ -227,6 +234,15 @@ On the entry server, also open the public listen port:
 
 ```bash
 ufw allow 9001/tcp
+```
+
+## Output and colors
+
+Colors and Unicode symbols are used only on an interactive UTF-8 terminal.
+
+```bash
+NO_COLOR=1 multitunnel status    # disable colors
+MTM_ASCII=1 multitunnel          # ASCII-only symbols for terminals without Unicode
 ```
 
 ## Files

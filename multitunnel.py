@@ -93,22 +93,160 @@ class MTMError(RuntimeError):
     pass
 
 
+# ----------------------------------------------------------------------------
+# Terminal UI
+# Colors and Unicode symbols are used only on an interactive UTF-8 terminal.
+# NO_COLOR=1 disables colors, MTM_ASCII=1 forces plain ASCII symbols.
+# Piped or logged output keeps the plain [OK]/[WARN]/[ERR] tags.
+# ----------------------------------------------------------------------------
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_STYLE_CODES = {
+    "bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33",
+    "blue": "34", "magenta": "35", "cyan": "36", "gray": "90",
+}
+_GLYPHS = {
+    "ok": ("✔", "[OK]"), "info": ("•", "[INFO]"), "warn": ("▲", "[WARN]"), "err": ("✖", "[ERR]"),
+    "arrow": ("❯", ">"), "on": ("●", "*"), "off": ("○", "-"), "skip": ("–", "-"), "sep": ("·", "|"),
+    "to": ("→", "->"), "h": ("─", "-"), "v": ("│", "|"),
+    "tl": ("╭", "+"), "tr": ("╮", "+"), "bl": ("╰", "+"), "br": ("╯", "+"),
+}
+
+
+def use_color(stream: Any = None) -> bool:
+    stream = stream or sys.stdout
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    if os.environ.get("MTM_FORCE_COLOR"):
+        return True
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def use_unicode(stream: Any = None) -> bool:
+    if os.environ.get("MTM_ASCII"):
+        return False
+    encoding = (getattr(stream or sys.stdout, "encoding", None) or "").lower()
+    return "utf" in encoding
+
+
+def style(text: str, *names: str, stream: Any = None) -> str:
+    if not names or not use_color(stream):
+        return text
+    return "\033[" + ";".join(_STYLE_CODES[n] for n in names) + "m" + text + "\033[0m"
+
+
 def color(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
+    """Raw ANSI helper kept for compatibility."""
+    if not use_color():
         return text
     return f"\033[{code}m{text}\033[0m"
 
 
+def glyph(name: str, stream: Any = None) -> str:
+    fancy, plain = _GLYPHS[name]
+    return fancy if use_unicode(stream) else plain
+
+
+def vlen(text: str) -> int:
+    """Visible length of a string that may contain ANSI codes."""
+    return len(ANSI_RE.sub("", text))
+
+
+def pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - vlen(text))
+
+
+def term_width() -> int:
+    return max(40, min(shutil.get_terminal_size((80, 24)).columns, 110))
+
+
+def layout_width() -> int:
+    """Width of the menu/header block: 72 on wide terminals, up to 62 on narrow ones."""
+    available = term_width() - 2
+    return 72 if available >= 74 else min(available, 62)
+
+
+def _tag(kind: str, color_name: str, stream: Any) -> str:
+    if use_color(stream) and use_unicode(stream):
+        return style(glyph(kind, stream), color_name, "bold", stream=stream) + " "
+    return style(_GLYPHS[kind][1], color_name, stream=stream) + " "
+
+
 def info(msg: str) -> None:
-    print(color("[INFO] ", "36") + msg)
+    print(_tag("info", "cyan", sys.stdout) + msg)
 
 
 def ok(msg: str) -> None:
-    print(color("[OK] ", "32") + msg)
+    print(_tag("ok", "green", sys.stdout) + msg)
 
 
 def warn(msg: str) -> None:
-    print(color("[WARN] ", "33") + msg)
+    print(_tag("warn", "yellow", sys.stdout) + msg)
+
+
+def err(msg: str) -> None:
+    print(_tag("err", "red", sys.stderr) + style(msg, "red", stream=sys.stderr), file=sys.stderr)
+
+
+def dim(text: str) -> str:
+    return style(text, "dim")
+
+
+def section(title: str) -> None:
+    print()
+    print(" " + style(title, "bold", "cyan"))
+    print(" " + style(glyph("h") * (layout_width() - 2), "gray"))
+
+
+def kv_lines(rows: Sequence[Tuple[str, str]], indent: int = 2) -> str:
+    width = max((vlen(k) for k, _ in rows), default=0) + 2
+    return "\n".join(" " * indent + pad(style(k, "gray"), width) + v for k, v in rows)
+
+
+def print_table(headers: Sequence[str], rows: Sequence[Sequence[str]], indent: int = 2) -> None:
+    widths = [vlen(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], vlen(cell))
+    lead = " " * indent
+    print((lead + "  ".join(pad(style(h, "bold", "gray"), widths[i]) for i, h in enumerate(headers))).rstrip())
+    print(lead + style("  ".join(glyph("h") * w for w in widths), "gray"))
+    for row in rows:
+        print((lead + "  ".join(pad(cell, widths[i]) for i, cell in enumerate(row))).rstrip())
+
+
+def state_badge(state: str) -> str:
+    if state == "active":
+        return style(f"{glyph('on')} active", "green")
+    if state in {"failed", "error"}:
+        return style(f"{glyph('err')} {state}", "red")
+    if state == "disabled":
+        return style(f"{glyph('off')} disabled", "gray")
+    if state == "test-mode":
+        return style(f"{glyph('skip')} test-mode", "gray")
+    return style(f"{glyph('off')} {state}", "yellow")
+
+
+def unit_state(service: Dict[str, Any]) -> str:
+    if not service.get("enabled", True):
+        return "disabled"
+    if os.environ.get("MTM_TEST_MODE") or not command_exists("systemctl"):
+        return "test-mode"
+    p = run(["systemctl", "is-active", unit_name(service)], check=False, capture=True)
+    return p.stdout.strip() or "inactive"
+
+
+def box(lines: Sequence[str], width: int) -> str:
+    inner = width - 4
+    out = [style(glyph("tl") + glyph("h") * (width - 2) + glyph("tr"), "cyan")]
+    for line in lines:
+        out.append(style(glyph("v"), "cyan") + " " + pad(line, inner) + " " + style(glyph("v"), "cyan"))
+    out.append(style(glyph("bl") + glyph("h") * (width - 2) + glyph("br"), "cyan"))
+    return "\n".join(out)
+
+
+def prompt(label: str, default: Optional[str] = None) -> str:
+    suffix = " " + dim(f"[{default}]") if default not in (None, "") else ""
+    return f"  {style(glyph('arrow'), 'cyan', 'bold')} {label}{suffix}: "
 
 
 def fail(msg: str) -> None:
@@ -368,7 +506,7 @@ def init_manager(role: str) -> None:
 
 
 def openssl(*args: str) -> None:
-    run(["openssl", *args])
+    run(["openssl", *args], capture=True)
 
 
 def certificate_sans(hosts: Iterable[str]) -> str:
@@ -1100,8 +1238,30 @@ def rebuild(names: Optional[List[str]] = None, restart: bool = True) -> None:
             raise
     ok("All selected configurations verified and rebuilt")
 
-def show_services() -> None:
-    print(json.dumps(load_services(), ensure_ascii=False, indent=2))
+def show_services(as_json: bool = False) -> None:
+    items = load_services()
+    if as_json:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return
+    if not items:
+        info("No services configured yet. Import a bundle with: multitunnel import-bundle FILE")
+        return
+    rows = []
+    for s in items:
+        target = f"{s['final_local_ip']}:{s['final_local_port']}"
+        rows.append([
+            style(s["name"], "bold"),
+            s["engine"].upper(),
+            f"{s['payload']}/{s['transport']}",
+            str(s["listen_port"]),
+            str(s["tunnel_port"]),
+            target,
+            style(f"{glyph('on')} enabled", "green") if s.get("enabled", True) else state_badge("disabled"),
+        ])
+    print()
+    print_table(["NAME", "ENGINE", "PAYLOAD/TRANSPORT", "LISTEN", "TUNNEL", "TARGET", "CONFIG"], rows)
+    print()
+    print("  " + dim("Secrets are hidden. Use 'multitunnel show --json' for the full definition."))
 
 
 def set_enabled(name: str, enabled: bool) -> None:
@@ -1146,19 +1306,27 @@ def remove_service(name: str) -> None:
 def service_status(name: Optional[str] = None) -> None:
     st = load_state()
     items = load_services()
-    print(json.dumps(st, ensure_ascii=False, indent=2))
+    section("Node")
+    print(kv_lines([
+        ("Role", style(st["role"].upper(), "bold")),
+        ("Node ID", st.get("node_id", "-")),
+        ("Manager", VERSION),
+        ("Created", str(st.get("created_at", "-"))[:19].replace("T", " ")),
+    ]))
+    section("Services")
+    shown = 0
     for s in items:
         if name and s["name"] != name:
             continue
-        unit = unit_name(s)
-        if os.environ.get("MTM_TEST_MODE"):
-            active = "test-mode"
-        else:
-            p = run(["systemctl", "is-active", unit], check=False, capture=True)
-            active = p.stdout.strip() or "inactive"
-        print(f"{s['name']}: engine={s['engine']} payload={s['payload']} transport={s['transport']} enabled={s.get('enabled', True)} state={active}")
-        cfg = config_path(s, st["role"])
-        print(f"  config={cfg}")
+        shown += 1
+        state = unit_state(s)
+        head = f"{style(s['name'], 'bold')}  {dim(s['engine'].upper())}  {s['payload']}/{s['transport']}"
+        print(f"  {pad(head, 44)} {state_badge(state)}")
+        print("    " + dim(f"listen :{s['listen_port']}  {glyph('to')}  tunnel :{s['tunnel_port']}  "
+                            f"{glyph('to')}  {s['final_local_ip']}:{s['final_local_port']}"))
+        print("    " + dim(f"config {config_path(s, st['role'])}"))
+    if not shown:
+        info("No matching services" if name else "No services configured yet")
 
 
 def tcp_probe(host: str, port: int, timeout: float = 3.0) -> Tuple[bool, str]:
@@ -1173,28 +1341,43 @@ def health() -> None:
     st = load_state()
     role = st["role"]
     bad = 0
+
+    def check(good: Optional[bool], text: str) -> None:
+        if good is None:
+            print(f"    {style(glyph('skip'), 'gray')} {dim(text)}")
+        elif good:
+            print(f"    {style(glyph('ok'), 'green')} {text}")
+        else:
+            print(f"    {style(glyph('err'), 'red')} {style(text, 'red')}")
+
+    section("Health check")
     for s in load_services():
         if not s.get("enabled", True):
             continue
-        print(f"[{s['name']}] {s['engine']} {s['payload']}/{s['transport']}")
+        print(f"  {style(s['name'], 'bold')}  {dim(s['engine'].upper() + ' ' + s['payload'] + '/' + s['transport'])}")
         if not os.environ.get("MTM_TEST_MODE"):
             p = run(["systemctl", "is-active", unit_name(s)], check=False, capture=True)
-            print(f"  systemd: {p.stdout.strip()}")
-            if p.stdout.strip() != "active":
+            state = p.stdout.strip() or "inactive"
+            check(state == "active", f"systemd unit {state}")
+            if state != "active":
                 bad += 1
         if role == "entry" and s["engine"] == "gost":
             for idx, hop in enumerate(s["hops"]):
                 for host in hop:
-                    if s["transport"] in UDP_GOST_TRANSPORTS:
-                        print(f"  hop{idx} {host}:{s['tunnel_port']}/udp: listener cannot be validated with TCP probe")
+                    if idx > 0:
+                        # Only the first hop is dialed by this node; later hops are reached through it.
+                        check(None, f"hop{idx} {host}:{s['tunnel_port']} is reached through hop0, not probed from here")
+                    elif s["transport"] in UDP_GOST_TRANSPORTS:
+                        check(None, f"hop{idx} {host}:{s['tunnel_port']}/udp cannot be probed over TCP")
                     else:
                         good, detail = tcp_probe(host, s["tunnel_port"])
-                        print(f"  hop{idx} {host}:{s['tunnel_port']}/tcp: {'OK' if good else 'FAIL'} {detail}")
+                        check(good, f"hop{idx} {host}:{s['tunnel_port']}/tcp {detail}")
                         bad += 0 if good else 1
         elif role == "final" and s["engine"] in {"gost", "frp"} and s["payload"] == "tcp":
             good, detail = tcp_probe(s["final_local_ip"], s["final_local_port"])
-            print(f"  local target: {'OK' if good else 'FAIL'} {detail}")
+            check(good, f"local target {s['final_local_ip']}:{s['final_local_port']} {detail}")
             bad += 0 if good else 1
+    print()
     if bad:
         fail(f"Health check found {bad} problem(s)")
     ok("Health check passed")
@@ -1203,20 +1386,29 @@ def health() -> None:
 def doctor() -> None:
     st = load_state()
     role = st["role"]
-    print(f"role={role} version={VERSION}")
+    section("Doctor")
+    print(kv_lines([("Role", style(role.upper(), "bold")), ("Manager", VERSION)]))
+    print()
     for engine, binaries in {"gost": ["gost"], "frp": ["frpc", "frps"]}.items():
         paths = [BIN_DIR / x for x in binaries]
-        print(f"{engine}: " + ("installed" if all(p.exists() for p in paths) else "missing"))
+        if all(p.exists() for p in paths):
+            print(f"  {style(glyph('ok'), 'green')} {engine.upper()} installed")
+        else:
+            print(f"  {style(glyph('off'), 'gray')} {dim(engine.upper() + ' not installed')}")
     items = load_services()
     for s in items:
         validate_service(s, role)
         cfg = config_path(s, role)
-        print(f"{s['name']}: config={'present' if cfg.exists() else 'missing'} unit={unit_name(s)}")
-        if cfg.exists() and binary_for(s, role).exists():
+        if not cfg.exists():
+            print(f"  {style(glyph('warn'), 'yellow')} {s['name']}: config missing {dim('(' + unit_name(s) + ')')}")
+            continue
+        if binary_for(s, role).exists():
             verify_config(s, role, cfg)
-            print("  syntax: OK")
+            print(f"  {style(glyph('ok'), 'green')} {s['name']}: config valid {dim('(' + unit_name(s) + ')')}")
+        else:
+            print(f"  {style(glyph('skip'), 'gray')} {s['name']}: config present, engine missing so syntax not checked")
     port_conflicts(items, role)
-    print("port conflicts: none")
+    print(f"  {style(glyph('ok'), 'green')} No port conflicts")
 
 
 def export_all(output: str) -> None:
@@ -1351,6 +1543,7 @@ def selftest_gost(transport: str = "tls") -> None:
         fail("GOST binary is not installed. Run: multitunnel install-engine gost")
     if not command_exists("openssl"):
         fail("openssl is required for self-test")
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="mtm-selftest-gost-") as td:
         root = Path(td)
         pki = root / "pki"
@@ -1402,7 +1595,7 @@ def selftest_gost(transport: str = "tls") -> None:
                 if server_fh is not None: server_fh.close()
                 echo.shutdown()
                 thread.join(timeout=2)
-    ok(f"GOST {transport} real end-to-end self-test passed")
+    ok(f"GOST {transport:<9} end-to-end self-test passed " + dim(f"({time.monotonic() - started:.1f}s)"))
 
 
 def selftest_frp(transport: str = "tcp") -> None:
@@ -1414,6 +1607,7 @@ def selftest_frp(transport: str = "tcp") -> None:
         fail("FRP binaries are not installed. Run: multitunnel install-engine frp")
     if not command_exists("openssl"):
         fail("openssl is required for self-test")
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="mtm-selftest-frp-") as td:
         root = Path(td)
         certs = make_ca_and_certs(root / "certs", ["127.0.0.1"], need_client=True)
@@ -1465,7 +1659,7 @@ def selftest_frp(transport: str = "tcp") -> None:
                 if server_fh is not None: server_fh.close()
                 echo.shutdown()
                 thread.join(timeout=2)
-    ok(f"FRP {transport} real end-to-end self-test passed")
+    ok(f"FRP  {transport:<9} end-to-end self-test passed " + dim(f"({time.monotonic() - started:.1f}s)"))
 
 
 def selftest(engine: str, gost_transport: str, frp_transport: str) -> None:
@@ -1475,9 +1669,8 @@ def selftest(engine: str, gost_transport: str, frp_transport: str) -> None:
         selftest_frp(frp_transport)
 
 def ask_text(label: str, default: Optional[str] = None, *, required: bool = False) -> str:
-    suffix = f" [{default}]" if default not in (None, "") else ""
     while True:
-        value = input(f"{label}{suffix}: ").strip()
+        value = input(prompt(label, default)).strip()
         if not value and default is not None:
             return str(default)
         if value or not required:
@@ -1496,12 +1689,16 @@ def ask_port(label: str, default: Optional[int] = None) -> int:
 
 def ask_choice(label: str, choices: Sequence[Tuple[str, str]], default: Optional[str] = None) -> str:
     valid = {key: text for key, text in choices}
+    key_width = max(len(k) for k, _ in choices)
+    numeric = all(k.isdigit() for k, _ in choices)
     while True:
-        print(f"\n{label}")
+        print()
+        print("  " + style(label, "bold"))
         for key, text in choices:
-            marker = " (default)" if key == default else ""
-            print(f"  {key}) {text}{marker}")
-        value = input("Select: ").strip() or (default or "")
+            marker = "  " + style("(default)", "green") if key == default else ""
+            shown = key.rjust(key_width) if numeric else key.ljust(key_width)
+            print(f"    {style(shown, 'cyan', 'bold')}  {text}{marker}")
+        value = input(prompt("Select", default)).strip() or (default or "")
         if value in valid:
             return value
         warn("Invalid selection")
@@ -1510,7 +1707,7 @@ def ask_choice(label: str, choices: Sequence[Tuple[str, str]], default: Optional
 def ask_yes_no(label: str, default: bool = False) -> bool:
     suffix = "Y/n" if default else "y/N"
     while True:
-        value = input(f"{label} [{suffix}]: ").strip().lower()
+        value = input(prompt(label, suffix)).strip().lower()
         if not value:
             return default
         if value in {"y", "yes"}:
@@ -1524,14 +1721,17 @@ def select_service(*, allow_all: bool = False) -> Optional[Dict[str, Any]]:
     items = load_services()
     if not items:
         fail("No services are configured")
-    print("\nConfigured services")
+    print()
+    print("  " + style("Configured services", "bold"))
+    width = len(str(len(items)))
     if allow_all:
-        print("  0) All services")
+        print(f"    {style('0'.rjust(width), 'cyan', 'bold')}  All services")
     for idx, service in enumerate(items, 1):
-        state = "enabled" if service.get("enabled", True) else "disabled"
-        print(f"  {idx}) {service['name']}  {service['engine']}  {service['payload']}/{service['transport']}  {state}")
+        state = "enabled" if service.get("enabled", True) else style("disabled", "gray")
+        print(f"    {style(str(idx).rjust(width), 'cyan', 'bold')}  {pad(style(service['name'], 'bold'), 20)} "
+              f"{dim(service['engine'].upper())}  {service['payload']}/{service['transport']}  {state}")
     while True:
-        raw = input("Select service: ").strip()
+        raw = input(prompt("Select service")).strip()
         if allow_all and raw == "0":
             return None
         try:
@@ -1546,28 +1746,29 @@ def select_service(*, allow_all: bool = False) -> Optional[Dict[str, Any]]:
         warn("Invalid service selection")
 
 
-def service_summary(service: Dict[str, Any]) -> str:
+def service_summary(service: Dict[str, Any], extra: Sequence[Tuple[str, str]] = ()) -> str:
     rows = [
-        f"Name: {service['name']}",
-        f"Engine: {service['engine'].upper()}",
-        f"Payload: {service['payload'].upper()}",
-        f"Transport: {service['transport'].upper()}",
-        f"Entry listen port: {service['listen_port']}",
-        f"Tunnel port: {service['tunnel_port']}",
-        f"Final target: {service['final_local_ip']}:{service['final_local_port']}",
+        ("Name", style(service["name"], "bold")),
+        ("Engine", service["engine"].upper()),
+        ("Payload", service["payload"].upper()),
+        ("Transport", service["transport"].upper()),
+        ("Entry listen port", str(service["listen_port"])),
+        ("Tunnel port", str(service["tunnel_port"])),
+        ("Final target", f"{service['final_local_ip']}:{service['final_local_port']}"),
     ]
     if service["engine"] == "gost":
-        rows.append("Hops: " + "; ".join(",".join(group) for group in service.get("hops", [])))
+        rows.append(("Hops", " ; ".join(", ".join(group) for group in service.get("hops", []))))
         if service.get("server_name"):
-            rows.append(f"TLS server name override: {service['server_name']}")
+            rows.append(("TLS server name", service["server_name"]))
         if service.get("ws_path"):
-            rows.append(f"WebSocket path: {service['ws_path']}")
+            rows.append(("WebSocket path", service["ws_path"]))
         if service.get("transport") == "kcp":
-            rows.append(f"KCP profile: {service.get('kcp_profile', 'balanced')}")
+            rows.append(("KCP profile", service.get("kcp_profile", "balanced")))
     else:
-        rows.append(f"Entry host: {service['entry_host']}")
-        rows.append(f"Load balancing: {'enabled' if service.get('load_balance') else 'disabled'}")
-    return "\n".join(rows)
+        rows.append(("Entry host", service["entry_host"]))
+        rows.append(("Load balancing", "enabled" if service.get("load_balance") else "disabled"))
+    rows.extend(extra)
+    return kv_lines(rows)
 
 
 def wizard_create_pair() -> List[Path]:
@@ -1663,8 +1864,8 @@ def wizard_create_pair() -> List[Path]:
         if transport in UDP_GOST_TRANSPORTS:
             kwargs["hops"] = ask_text("Final server IP or hostname", required=True)
         else:
-            print("Enter one pool per hop. Separate nodes with commas and hops with semicolons.")
-            print("Example: relay1,relay2;final1,final2")
+            print("  " + dim("Enter one pool per hop. Separate nodes with commas and hops with semicolons."))
+            print("  " + dim("Example: relay1,relay2;final1,final2"))
             kwargs["hops"] = ask_text("GOST hop pools", required=True)
         parse_hops(kwargs["hops"])
         if transport == "kcp":
@@ -1709,15 +1910,15 @@ def wizard_create_pair() -> List[Path]:
     else:
         preview["entry_host"] = kwargs["entry_host"]
         preview["load_balance"] = kwargs["load_balance"]
-    print("\nDeployment summary")
-    print(service_summary(preview))
-    print(f"Bundle directory: {Path(output).expanduser().resolve()}")
+    section("Deployment summary")
+    print(service_summary(preview, [("Bundle directory", str(Path(output).expanduser().resolve()))]))
+    print()
     if not ask_yes_no("Generate deployment bundles", True):
         warn("Bundle generation cancelled")
         return []
 
     paths = pair_gost(args) if engine == "gost" else pair_frp(args)
-    print("\nGenerated bundles")
+    section("Generated bundles")
     for path in paths:
         ok(str(path))
 
@@ -1780,7 +1981,7 @@ def wizard_edit_service() -> None:
     current = select_service()
     assert current is not None
     edited = json.loads(json.dumps(current))
-    print("\nPress Enter to keep the current value.")
+    print("  " + dim("Press Enter to keep the current value."))
     edited["payload"] = ask_choice("Payload protocol", [("tcp", "TCP"), ("udp", "UDP")], edited["payload"])
     if edited["engine"] == "gost":
         edited["transport"] = ask_choice("GOST transport", [(x, x.upper()) for x in sorted(GOST_TRANSPORTS)], edited["transport"])
@@ -1810,8 +2011,9 @@ def wizard_edit_service() -> None:
             edited["load_balance"] = False
         if edited.get("load_balance"):
             edited["group"] = ask_text("Load-balancer group", edited.get("group") or f"mtm-{edited['name']}", required=True)
-    print("\nUpdated service summary")
+    section("Updated service summary")
     print(service_summary(edited))
+    print()
     if ask_yes_no("Apply this configuration", False):
         updates = {key: value for key, value in edited.items() if current.get(key) != value}
         if not updates:
@@ -1965,7 +2167,7 @@ def menu_status_and_logs() -> None:
             lines = int(ask_text("Number of log lines", "80", required=True))
             service_logs(service["name"], lines=lines)
         else:
-            print("Press Ctrl+C to stop following logs.")
+            print("  " + dim("Press Ctrl+C to stop following logs."))
             service_logs(service["name"], lines=80, follow=True)
 
 
@@ -1997,32 +2199,117 @@ def menu_restore() -> None:
         restore_backup(snapshot.name)
 
 
+MENU_GROUPS: List[Tuple[str, List[Tuple[str, str]]]] = [
+    ("Setup", [
+        ("1", "Initialize node"),
+        ("2", "Create deployment bundles"),
+        ("3", "Install GOST"),
+        ("4", "Install FRP"),
+        ("5", "Import service bundle"),
+    ]),
+    ("Services", [
+        ("6", "List services"),
+        ("7", "Edit service"),
+        ("8", "Enable / disable service"),
+        ("9", "Remove service"),
+        ("10", "Rebuild / restart services"),
+    ]),
+    ("Monitoring", [
+        ("11", "Status and logs"),
+        ("12", "Health check"),
+        ("13", "Doctor and validation"),
+        ("14", "End-to-end self-test"),
+    ]),
+    ("Backup", [
+        ("15", "Export configuration backup"),
+        ("16", "Restore backup"),
+    ]),
+    ("", [
+        ("17", "Uninstall manager"),
+        ("0", "Exit"),
+    ]),
+]
+
+
+def menu_header() -> None:
+    width = layout_width()
+    title = style("MultiTunnel Relay Manager", "bold")
+    version = dim(f"v{VERSION}")
+    gap = " " * max(1, (width - 4) - vlen(title) - vlen(version))
+    print()
+    subtitle = "Encrypted TCP/UDP tunnels with GOST and FRP" if width >= 50 else "TCP/UDP tunnels with GOST and FRP"
+    print(box([title + gap + version, dim(subtitle)], width))
+
+    rows: List[Tuple[str, str]] = []
+    try:
+        st = read_json(STATE, {}) if STATE.exists() else {}
+    except MTMError:
+        st = {}
+    if st.get("role"):
+        rows.append(("Node", f"{style(str(st['role']).upper(), 'bold', 'cyan')} {dim(glyph('sep'))} {st.get('node_id', '-')}"))
+    else:
+        rows.append(("Node", style("not initialized", "yellow") + dim("  (start with option 1)")))
+
+    def engine_badge(label: str, binaries: Sequence[str]) -> str:
+        if all((BIN_DIR / b).exists() for b in binaries):
+            return style(f"{glyph('on')} {label}", "green")
+        return style(f"{glyph('off')} {label}", "gray")
+
+    rows.append(("Engines", engine_badge("GOST", ["gost"]) + "   " + engine_badge("FRP", ["frpc", "frps"])))
+
+    try:
+        items = load_services()
+    except MTMError:
+        items = []
+    if items:
+        states = [unit_state(s) for s in items]
+        parts = [f"{len(items)} total"]
+        running = sum(1 for x in states if x == "active")
+        disabled = sum(1 for x in states if x == "disabled")
+        failed = sum(1 for x in states if x not in {"active", "disabled", "test-mode"})
+        if "test-mode" not in states:
+            parts.append(style(f"{running} running", "green"))
+        if failed:
+            parts.append(style(f"{failed} not running", "red"))
+        if disabled:
+            parts.append(dim(f"{disabled} disabled"))
+        rows.append(("Services", f" {dim(glyph('sep'))} ".join(parts)))
+    else:
+        rows.append(("Services", dim("none yet")))
+    print(kv_lines(rows))
+
+
+def render_menu() -> None:
+    width = layout_width()
+    two_columns = width >= 70
+    col = (width - 4) // 2
+
+    def item(key: str, text: str) -> str:
+        label = style(text, "red") if key == "17" else text
+        return f"{style(key.rjust(2), 'cyan', 'bold')}  {label}"
+
+    for title, entries in MENU_GROUPS:
+        print()
+        if title:
+            print("  " + style(title.upper(), "bold", "gray"))
+        else:
+            print("  " + style(glyph("h") * (width - 2), "gray"))
+        if two_columns:
+            for i in range(0, len(entries), 2):
+                left = item(*entries[i])
+                right = item(*entries[i + 1]) if i + 1 < len(entries) else ""
+                print(("   " + pad(left, col) + right).rstrip())
+        else:
+            for key, text in entries:
+                print("   " + item(key, text))
+
+
 def menu() -> None:
-    options = {
-        "1": "Initialize node",
-        "2": "Create deployment bundles (guided wizard)",
-        "3": "Install GOST",
-        "4": "Install FRP",
-        "5": "Import service bundle",
-        "6": "List services",
-        "7": "Edit service",
-        "8": "Enable or disable service",
-        "9": "Remove service",
-        "10": "Rebuild or restart services",
-        "11": "Status and logs",
-        "12": "Health check",
-        "13": "Doctor and validation",
-        "14": "Real end-to-end self-test",
-        "15": "Export configuration backup",
-        "16": "Restore backup",
-        "17": "Uninstall manager",
-        "0": "Exit",
-    }
     while True:
-        print(f"\nMultiTunnel Relay Manager {VERSION}")
-        for key, text in options.items():
-            print(f"{key}) {text}")
-        choice = input("Select [0]: ").strip() or "0"
+        menu_header()
+        render_menu()
+        print()
+        choice = input(prompt("Select an option", "0")).strip() or "0"
         try:
             if choice == "0":
                 return
@@ -2081,11 +2368,11 @@ def menu() -> None:
             else:
                 warn("Unknown option")
         except MTMError as e:
-            print(color(f"[ERR] {e}", "31"), file=sys.stderr)
+            err(str(e))
         except EOFError:
             return
         except KeyboardInterrupt:
-            print("\nReturning to the main menu")
+            print("\n  " + dim("Returning to the main menu"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2126,7 +2413,8 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("bundle")
     imp.add_argument("--replace", action="store_true")
 
-    sp.add_parser("show", help="Show configured services")
+    showp = sp.add_parser("show", help="Show configured services")
+    showp.add_argument("--json", action="store_true", help="Print the full service definitions as JSON")
     ena = sp.add_parser("enable"); ena.add_argument("name")
     dis = sp.add_parser("disable"); dis.add_argument("name")
     rem = sp.add_parser("remove"); rem.add_argument("name")
@@ -2207,7 +2495,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.cmd == "import-bundle":
             import_bundle(args.bundle, args.replace)
         elif args.cmd == "show":
-            show_services()
+            show_services(as_json=args.json)
         elif args.cmd == "enable":
             set_enabled(args.name, True)
         elif args.cmd == "disable":
@@ -2254,7 +2542,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("unknown command")
         return 0
     except MTMError as e:
-        print(color(f"[ERR] {e}", "31"), file=sys.stderr)
+        err(str(e))
         return 1
     except KeyboardInterrupt:
         print("\nInterrupted", file=sys.stderr)

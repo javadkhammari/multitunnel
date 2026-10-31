@@ -7,6 +7,12 @@
 - Added a regression test for the FRP `wss` rejection
 - Verified every remaining transport end to end with the real GOST 3.2.6 and FRP 0.70.0 binaries
 - English documentation
+- New terminal UI: header with node role, engines and running services, grouped menu (two columns on wide terminals, one on narrow), colored prompts and status badges
+- `show` prints a table and hides secrets. `show --json` keeps the full output for scripts
+- `status`, `health` and `doctor` print readable check lists instead of raw JSON
+- Health check probes only the first hop from the entry node. Later hops are reached through it and are no longer reported as false failures
+- Self-test shows the duration of each run. OpenSSL output during certificate generation is suppressed (errors are still reported)
+- `NO_COLOR` and `MTM_ASCII` support. Piped output keeps plain `[OK]`/`[WARN]`/`[ERR]` tags
 
 ## 2.1.0
 

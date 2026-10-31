@@ -4,7 +4,7 @@ Date: 2026-10-31
 
 ## Automated tests
 
-`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 18 unit and CLI integration tests. All passed.
+`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 19 unit and CLI integration tests. All passed.
 
 Coverage includes:
 
@@ -18,6 +18,7 @@ Coverage includes:
 - Host-specific TLS server names and certificates with IP/DNS SANs
 - Rejection of UDP-based multi-hop GOST chains
 - Rejection of FRP `wss`
+- `show` hides secrets, `show --json` keeps them, and piped output has no ANSI codes
 - FRP mutual TLS, wire protocol v2 and QUIC option placement
 - Managed-port conflict detection
 - systemd hardening sections

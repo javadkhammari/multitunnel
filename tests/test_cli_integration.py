@@ -142,6 +142,35 @@ class CLIIntegrationTests(unittest.TestCase):
             self.assertLess(client_cfg.index("transport.quic.keepalivePeriod"), client_cfg.index("[[proxies]]"))
             self.assertIn("loadBalancer.group", client_cfg)
 
+    def test_show_hides_secrets_and_piped_output_is_plain(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            bundles = root / "bundles"
+            bundles.mkdir()
+            p = run_cmd([
+                "pair", "--engine", "gost", "--name", "ovpn", "--payload", "tcp",
+                "--transport", "tls", "--listen-port", "19101", "--tunnel-port", "18543",
+                "--final-local-port", "19102", "--hops", "127.0.0.1",
+                "--secret", "very-secret-value", "--output", str(bundles),
+            ], self.base_env(root / "pair-env"))
+            # Piped output: no ANSI codes, plain grep-friendly tags
+            self.assertNotIn("\x1b[", p.stdout)
+            self.assertIn("[OK]", p.stdout)
+
+            node = root / "node"
+            env = self.base_env(node)
+            fake_engine(node / "bin" / "gost", "gost")
+            run_cmd(["init", "--role", "entry"], env)
+            run_cmd(["import-bundle", str(bundles / "mtm-ovpn-gost-entry.tar.gz")], env)
+
+            table = run_cmd(["show"], env).stdout
+            self.assertIn("ovpn", table)
+            self.assertIn("tcp/tls", table)
+            self.assertNotIn("very-secret-value", table)
+
+            full = json.loads(run_cmd(["show", "--json"], env).stdout)
+            self.assertEqual(full[0]["auth_secret"], "very-secret-value")
+
     def test_frp_wss_is_rejected(self):
         # frps cannot terminate wss on its bind port without an external TLS
         # reverse proxy, so the manager must not generate such a deployment.
