@@ -5,6 +5,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("multitunnel", ROOT / "multitunnel.py")
@@ -116,6 +117,46 @@ class ManagerTests(unittest.TestCase):
         ]
         with self.assertRaises(mt.MTMError):
             mt.port_conflicts(items, "entry")
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0, "needs root to change file group")
+    def test_generated_file_is_readable_by_service_group(self):
+        # Regression: configs were written as root:root 0640, so the unprivileged
+        # service user could not read them and the unit crash-looped.
+        import grp
+        group = next((g for g in ("daemon", "nogroup", "users") if _group_exists(g)), None)
+        if group is None:
+            self.skipTest("no spare system group available")
+        with tempfile.TemporaryDirectory() as td:
+            cfg = pathlib.Path(td) / "gost-x-entry.json"
+            mt.write_json(cfg, {"a": 1}, 0o640)
+            with mock.patch.object(mt, "RUN_GROUP", group):
+                mt.grant_service_read(cfg)
+            st = cfg.stat()
+            self.assertEqual(st.st_gid, grp.getgrnam(group).gr_gid)
+            self.assertEqual(st.st_mode & 0o777, 0o640)
+
+    def test_unit_that_crashes_after_start_is_detected(self):
+        # Regression: a unit that is 'active' for a moment and then fails must not
+        # be reported as started.
+        states = iter(["active", "failed"])
+
+        def fake_run(cmd, **kwargs):
+            out = next(states) if cmd[:2] == ["systemctl", "is-active"] else "log line"
+            return mock.Mock(stdout=out, returncode=0)
+
+        with mock.patch.object(mt, "run", side_effect=fake_run), mock.patch.object(mt.time, "sleep"):
+            with self.assertRaises(mt.MTMError) as ctx:
+                mt.wait_unit_stable("multitunnel-gost-x.service", seconds=5)
+        self.assertIn("failed to stay active", str(ctx.exception))
+
+
+def _group_exists(name):
+    import grp
+    try:
+        grp.getgrnam(name)
+        return True
+    except KeyError:
+        return False
 
 
 if __name__ == "__main__":

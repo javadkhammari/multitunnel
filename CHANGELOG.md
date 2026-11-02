@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.1
+
+- Fixed: generated configs were written as `root:root`, so the unprivileged `mtunnel` service user could not read them and the service crash-looped with `permission denied`. Configs are now `root:mtunnel 0640` after every write, rebuild, rollback and restore
+- Fixed: a service that starts and then crashes within a few seconds was reported as started. Rebuild and import now wait until the unit stays active, and show the last log lines on failure
+- Two regression tests for these cases
+
 ## 2.2.0
 
 - Renamed the public entry role to `entry` (`--role entry`, `--entry-host`, `*-entry.tar.gz` bundles)

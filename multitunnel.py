@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import grp
 import datetime as dt
 import hashlib
 import ipaddress
@@ -52,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 APP = "multitunnel"
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 
 ETC = Path(os.environ.get("MTM_ETC", "/etc/multitunnel-manager"))
 STATE = ETC / "state.json"
@@ -385,6 +386,46 @@ def ensure_run_user() -> None:
     for p in (ETC, GENERATED, PKI, SECRETS, BIN_DIR):
         run(["chgrp", "-R", RUN_GROUP, str(p)], check=False)
     run(["chmod", "-R", "g+rX", str(ETC), str(BIN_DIR)], check=False)
+
+
+def grant_service_read(path: Path) -> None:
+    """Make a generated file readable by the unprivileged service user (root:mtunnel 0640).
+
+    Files are written atomically (new inode), so they never inherit the group
+    that ensure_run_user() set on older files. Call this after every write that
+    a service reads.
+    """
+    try:
+        gid = grp.getgrnam(RUN_GROUP).gr_gid
+    except KeyError:
+        return  # service user not created (e.g. test mode)
+    try:
+        os.chown(path, -1, gid)
+    except PermissionError:
+        return
+    os.chmod(path, 0o640)
+
+
+def unit_log_tail(unit: str, lines: int = 8) -> str:
+    p = run(["journalctl", "-u", unit, "-n", str(lines), "--no-pager", "-o", "cat"], check=False, capture=True)
+    return (p.stdout or "").strip()
+
+
+def wait_unit_stable(unit: str, seconds: float = 4.0) -> None:
+    """Fail if the unit is not active, or stops being active, during the first seconds after start.
+
+    A service that crashes on startup is restarted by systemd and can look
+    'active' for a moment, so one immediate check is not enough.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        p = run(["systemctl", "is-active", unit], check=False, capture=True)
+        state = p.stdout.strip()
+        if state != "active":
+            fail(f"Service failed to stay active: {unit} ({state or 'unknown'})\n{unit_log_tail(unit)}")
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(1)
 
 
 def install_deps() -> None:
@@ -1201,6 +1242,7 @@ def rebuild(names: Optional[List[str]] = None, restart: bool = True) -> None:
         try:
             if s["engine"] == "gost":
                 write_json(cfg, build_gost_config(role, s), 0o640)
+                grant_service_read(cfg)
             else:
                 if role == "entry":
                     content = build_frps_toml(s)
@@ -1209,21 +1251,21 @@ def rebuild(names: Optional[List[str]] = None, restart: bool = True) -> None:
                 else:
                     fail("FRP cannot run on relay role")
                 atomic_write(cfg, content, 0o640)
+                grant_service_read(cfg)
             verify_config(s, role, cfg)
             atomic_write(unit, systemd_unit(s, role, cfg), 0o644)
             if restart and not os.environ.get("MTM_TEST_MODE"):
                 run(["systemctl", "daemon-reload"])
                 run(["systemctl", "enable", unit.name])
                 run(["systemctl", "restart", unit.name])
-                p = run(["systemctl", "is-active", unit.name], check=False, capture=True)
-                if p.stdout.strip() != "active":
-                    fail(f"Service failed to become active: {unit.name}")
+                wait_unit_stable(unit.name)
         except Exception:
             if old_cfg is None:
                 cfg.unlink(missing_ok=True)
             else:
                 cfg.write_bytes(old_cfg)
                 os.chmod(cfg, 0o640)
+                grant_service_read(cfg)
             if old_unit is None:
                 unit.unlink(missing_ok=True)
             else:

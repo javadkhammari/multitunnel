@@ -1,10 +1,10 @@
-# Test Report: MultiTunnel Relay Manager 2.2.0
+# Test Report: MultiTunnel Relay Manager 2.2.1
 
 Date: 2026-10-31
 
 ## Automated tests
 
-`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 19 unit and CLI integration tests. All passed.
+`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 21 unit and CLI integration tests. All passed.
 
 Coverage includes:
 
@@ -19,6 +19,8 @@ Coverage includes:
 - Rejection of UDP-based multi-hop GOST chains
 - Rejection of FRP `wss`
 - `show` hides secrets, `show --json` keeps them, and piped output has no ANSI codes
+- Generated configs are readable by the unprivileged service group
+- A unit that crashes shortly after start is reported as failed
 - FRP mutual TLS, wire protocol v2 and QUIC option placement
 - Managed-port conflict detection
 - systemd hardening sections
