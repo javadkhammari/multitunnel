@@ -1,5 +1,11 @@
 # MultiTunnel Relay Manager
 
+[![Version](https://img.shields.io/github/v/tag/javadkhammari/multitunnel?label=version&sort=semver)](https://github.com/javadkhammari/multitunnel/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.8%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-orange)
+![Engines](https://img.shields.io/badge/engines-GOST%203.2.6%20%7C%20FRP%200.70.0-lightgrey)
+
 A command-line manager for building and running encrypted TCP/UDP tunnels between an **entry server** and one or more **relay** and **final** servers, using [GOST v3](https://github.com/go-gost/gost) or [FRP](https://github.com/fatedier/frp) as the transport engine.
 
 It sits in front of your existing service (OpenVPN, WireGuard, Xray, or anything else) and only manages the path between servers. Users keep connecting to the same port on the entry server; you can change the route behind it without touching client configs.
