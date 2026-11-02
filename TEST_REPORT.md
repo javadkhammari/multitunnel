@@ -1,10 +1,10 @@
-# Test Report: MultiTunnel Relay Manager 2.3.0
+# Test Report: MultiTunnel Relay Manager 2.3.1
 
 Date: 2026-10-31
 
 ## Automated tests
 
-`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 26 unit and CLI integration tests. All passed.
+`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 27 unit and CLI integration tests. All passed.
 
 Coverage includes:
 

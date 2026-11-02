@@ -183,7 +183,7 @@ With `--load-balance` you can import the same final bundle on several final serv
 multitunnel edit NAME --mux-sessions 4    # run on the entry node
 ```
 
-New `mtls`/`mwss` services use 4 sessions by default.
+New `mtls`/`mwss` services use 4 sessions by default. The wizard (menu option 2) and the edit wizard (option 7) ask for the number of connections when you pick `mtls` or `mwss`.
 
 FRP `wss` is not offered on purpose. frps cannot terminate WSS on its own port without an external TLS reverse proxy, so FRP uses `websocket` with mutual TLS instead.
 

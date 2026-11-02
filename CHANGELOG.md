@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.1
+
+- The bundle wizard (menu option 2) and the edit wizard (menu option 7) ask for the number of mux connections when `mtls` or `mwss` is selected
+- The service summary shows the WebSocket path only for WebSocket transports
+
 ## 2.3.0
 
 - New `--mux-sessions N` for `mtls` and `mwss` (`pair` and `edit`, default 4 for new services). The entry node keeps N parallel multiplexed TCP connections to the first hop and spreads streams across them round-robin. On lossy long-distance paths a single TCP connection has a low throughput ceiling, so several sessions raise total throughput while keeping the fast stream setup of multiplexing

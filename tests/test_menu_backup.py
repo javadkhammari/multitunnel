@@ -96,6 +96,24 @@ class MenuAndBackupTests(unittest.TestCase):
             self.assertEqual(args.listen_port, 9001)
             self.assertEqual(args.hops, "127.0.0.1")
 
+    def test_guided_wizard_asks_for_mux_connections(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = pathlib.Path(td) / "bundles"
+            fake_outputs = [output / "entry.tar.gz"]
+            answers = [
+                "1", "1", "", "mtls", "", "", "", "", str(output),
+                "127.0.0.1", "6", "n", "y",
+            ]
+            with mock.patch("builtins.input", side_effect=answers), \
+                 mock.patch.object(mt, "command_exists", return_value=True), \
+                 mock.patch.object(mt, "pair_gost", return_value=fake_outputs) as pair_mock, \
+                 mock.patch.object(mt, "STATE", pathlib.Path(td) / "missing-state.json"), \
+                 redirect_stdout(io.StringIO()):
+                mt.wizard_create_pair()
+            args = pair_mock.call_args.args[0]
+            self.assertEqual(args.transport, "mtls")
+            self.assertEqual(args.mux_sessions, 6)
+
     def test_cli_edit_and_export_restore_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td)

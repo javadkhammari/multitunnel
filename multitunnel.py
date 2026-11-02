@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 APP = "multitunnel"
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 
 ETC = Path(os.environ.get("MTM_ETC", "/etc/multitunnel-manager"))
 STATE = ETC / "state.json"
@@ -1781,6 +1781,17 @@ def ask_yes_no(label: str, default: bool = False) -> bool:
         warn("Enter yes or no")
 
 
+def ask_mux_sessions(default: int) -> int:
+    print("  " + dim("Parallel multiplexed connections between the servers. More connections give more"))
+    print("  " + dim(f"speed on long or lossy routes. Recommended: 4 (range 1-{MAX_MUX_SESSIONS})."))
+    while True:
+        raw = ask_text("Mux connections", str(default), required=True)
+        try:
+            return valid_mux_sessions(raw)
+        except MTMError as e:
+            warn(str(e))
+
+
 def select_service(*, allow_all: bool = False) -> Optional[Dict[str, Any]]:
     items = load_services()
     if not items:
@@ -1824,7 +1835,7 @@ def service_summary(service: Dict[str, Any], extra: Sequence[Tuple[str, str]] = 
         rows.append(("Hops", " ; ".join(", ".join(group) for group in service.get("hops", []))))
         if service.get("server_name"):
             rows.append(("TLS server name", service["server_name"]))
-        if service.get("ws_path"):
+        if service.get("ws_path") and service.get("transport") in {"wss", "mwss"}:
             rows.append(("WebSocket path", service["ws_path"]))
         if service.get("transport") == "kcp":
             rows.append(("KCP profile", service.get("kcp_profile", "balanced")))
@@ -1920,6 +1931,7 @@ def wizard_create_pair() -> List[Path]:
         "username": None,
         "path": None,
         "kcp_profile": "balanced",
+        "mux_sessions": None,
         "entry_host": None,
         "load_balance": False,
         "group": None,
@@ -1940,6 +1952,8 @@ def wizard_create_pair() -> List[Path]:
             ], "balanced")
         if transport in {"wss", "mwss"}:
             kwargs["path"] = ask_text("WebSocket path", f"/{secrets.token_urlsafe(10)}", required=True)
+        if transport in MUX_GOST_TRANSPORTS:
+            kwargs["mux_sessions"] = ask_mux_sessions(DEFAULT_MUX_SESSIONS)
         if ask_yes_no("Configure advanced authentication or TLS values", False):
             kwargs["username"] = ask_text("Relay username", "mt-" + secrets.token_hex(6), required=True)
             custom_secret = getpass.getpass("Relay password (leave empty to generate): ").strip()
@@ -1973,6 +1987,8 @@ def wizard_create_pair() -> List[Path]:
     }
     if engine == "gost":
         preview["hops"] = parse_hops(str(kwargs["hops"]))
+        if transport in MUX_GOST_TRANSPORTS:
+            preview["mux_sessions"] = kwargs["mux_sessions"]
     else:
         preview["entry_host"] = kwargs["entry_host"]
         preview["load_balance"] = kwargs["load_balance"]
@@ -2064,6 +2080,8 @@ def wizard_edit_service() -> None:
         edited["server_name"] = ask_text("TLS server name override", edited.get("server_name") or "") or None
         if edited["transport"] in {"wss", "mwss"}:
             edited["ws_path"] = ask_text("WebSocket path", edited.get("ws_path") or "/ws", required=True)
+        if edited["transport"] in MUX_GOST_TRANSPORTS:
+            edited["mux_sessions"] = ask_mux_sessions(int(edited.get("mux_sessions") or DEFAULT_MUX_SESSIONS))
         if edited["transport"] == "kcp":
             edited["kcp_profile"] = ask_choice("KCP profile", [
                 ("stable", "Stable"), ("balanced", "Balanced"), ("fast", "Fast")
