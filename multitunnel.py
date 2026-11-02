@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 APP = "multitunnel"
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 
 ETC = Path(os.environ.get("MTM_ETC", "/etc/multitunnel-manager"))
 STATE = ETC / "state.json"
@@ -88,6 +88,9 @@ FRP_TRANSPORTS = {"tcp", "kcp", "quic", "websocket"}
 TLS_GOST_TRANSPORTS = {"tls", "mtls", "wss", "mwss", "quic", "dtls"}
 UDP_GOST_TRANSPORTS = {"quic", "kcp", "dtls"}
 UDP_FRP_TRANSPORTS = {"kcp", "quic"}
+MUX_GOST_TRANSPORTS = {"mtls", "mwss"}
+DEFAULT_MUX_SESSIONS = 4
+MAX_MUX_SESSIONS = 16
 
 
 class MTMError(RuntimeError):
@@ -736,6 +739,7 @@ def pair_gost(args: argparse.Namespace) -> List[Path]:
             "server_name": server_name_override,
             "ws_path": path,
             "kcp_profile": args.kcp_profile,
+            "mux_sessions": valid_mux_sessions(getattr(args, "mux_sessions", None) or DEFAULT_MUX_SESSIONS),
             "enabled": True,
         }
         entry = dict(common, bundle_role="entry")
@@ -824,6 +828,16 @@ def verify_bundle(bundle: Path, extract_dir: Path) -> Dict[str, Any]:
     return service
 
 
+def valid_mux_sessions(value: Any) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        fail(f"Invalid mux sessions: {value}")
+    if n < 1 or n > MAX_MUX_SESSIONS:
+        fail(f"Mux sessions must be between 1 and {MAX_MUX_SESSIONS}")
+    return n
+
+
 def validate_service(service: Dict[str, Any], role: str) -> None:
     service["name"] = clean_name(str(service.get("name", "")))
     if service.get("engine") not in ENGINES:
@@ -842,6 +856,8 @@ def validate_service(service: Dict[str, Any], role: str) -> None:
             fail("GOST service requires hops")
         if service["transport"] in UDP_GOST_TRANSPORTS and len(service["hops"]) > 1:
             fail("GOST QUIC/KCP/DTLS multi-hop chains are unsupported; use a single hop or a TCP-based transport")
+        if "mux_sessions" in service:
+            service["mux_sessions"] = valid_mux_sessions(service["mux_sessions"])
     else:
         if service.get("transport") not in FRP_TRANSPORTS:
             fail("Invalid FRP transport")
@@ -1001,22 +1017,28 @@ def build_gost_config(role: str, service: Dict[str, Any]) -> Dict[str, Any]:
     chain_hops: List[Dict[str, Any]] = []
     for hop_idx, hosts in enumerate(service["hops"]):
         nodes: List[Dict[str, Any]] = []
+        # A multiplexed transport carries all streams over one TCP connection per node.
+        # On lossy long-distance paths one TCP connection has a low ceiling, so the
+        # first hop gets several identical nodes: GOST keeps one mux session per node
+        # and spreads new streams across them round-robin.
+        sessions = int(service.get("mux_sessions", 1)) if (transport in MUX_GOST_TRANSPORTS and hop_idx == 0) else 1
         for node_idx, host in enumerate(hosts):
-            dialer: Dict[str, Any] = {"type": transport}
-            if transport in TLS_GOST_TRANSPORTS:
-                dialer["tls"] = gost_tls(role, service, service.get("server_name") or host)
-            if metadata:
-                dialer["metadata"] = metadata
-            nodes.append({
-                "name": f"hop{hop_idx}-node{node_idx}",
-                "addr": f"{host}:{service['tunnel_port']}",
-                "connector": {
-                    "type": "relay",
-                    "auth": {"username": service["auth_user"], "password": service["auth_secret"]},
-                    "metadata": {"nodelay": True},
-                },
-                "dialer": dialer,
-            })
+            for session_idx in range(sessions):
+                dialer: Dict[str, Any] = {"type": transport}
+                if transport in TLS_GOST_TRANSPORTS:
+                    dialer["tls"] = gost_tls(role, service, service.get("server_name") or host)
+                if metadata:
+                    dialer["metadata"] = metadata
+                nodes.append({
+                    "name": f"hop{hop_idx}-node{node_idx}" + (f"-s{session_idx}" if sessions > 1 else ""),
+                    "addr": f"{host}:{service['tunnel_port']}",
+                    "connector": {
+                        "type": "relay",
+                        "auth": {"username": service["auth_user"], "password": service["auth_secret"]},
+                        "metadata": {"nodelay": True},
+                    },
+                    "dialer": dialer,
+                })
         chain_hops.append({
             "name": f"hop-{hop_idx}",
             "selector": {"strategy": "round", "maxFails": 2, "failTimeout": "20s"},
@@ -1806,6 +1828,8 @@ def service_summary(service: Dict[str, Any], extra: Sequence[Tuple[str, str]] = 
             rows.append(("WebSocket path", service["ws_path"]))
         if service.get("transport") == "kcp":
             rows.append(("KCP profile", service.get("kcp_profile", "balanced")))
+        if service.get("transport") in MUX_GOST_TRANSPORTS:
+            rows.append(("Mux sessions", str(service.get("mux_sessions", 1))))
     else:
         rows.append(("Entry host", service["entry_host"]))
         rows.append(("Load balancing", "enabled" if service.get("load_balance") else "disabled"))
@@ -2444,6 +2468,8 @@ def build_parser() -> argparse.ArgumentParser:
     pair.add_argument("--username")
     pair.add_argument("--path")
     pair.add_argument("--kcp-profile", choices=["stable", "balanced", "fast"], default="balanced")
+    pair.add_argument("--mux-sessions", type=int,
+                      help=f"Parallel mux connections for mtls/mwss (1-{MAX_MUX_SESSIONS}, default {DEFAULT_MUX_SESSIONS})")
     pair.add_argument("--entry-host")
     pair.add_argument("--load-balance", action="store_true")
     pair.add_argument("--group")
@@ -2474,6 +2500,7 @@ def build_parser() -> argparse.ArgumentParser:
     editp.add_argument("--server-name")
     editp.add_argument("--path", dest="ws_path")
     editp.add_argument("--kcp-profile", choices=["stable", "balanced", "fast"])
+    editp.add_argument("--mux-sessions", type=int, help=f"Parallel mux connections for mtls/mwss (1-{MAX_MUX_SESSIONS})")
     lb = editp.add_mutually_exclusive_group()
     lb.add_argument("--load-balance", dest="load_balance", action="store_true")
     lb.add_argument("--no-load-balance", dest="load_balance", action="store_false")
@@ -2547,7 +2574,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.cmd == "edit":
             updates: Dict[str, Any] = {}
             for key in ("payload", "transport", "listen_port", "tunnel_port", "final_local_ip",
-                        "final_local_port", "entry_host", "server_name", "ws_path", "kcp_profile",
+                        "final_local_port", "entry_host", "server_name", "ws_path", "kcp_profile", "mux_sessions",
                         "load_balance", "group"):
                 value = getattr(args, key, None)
                 if value is not None:

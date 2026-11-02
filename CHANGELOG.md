@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0
+
+- New `--mux-sessions N` for `mtls` and `mwss` (`pair` and `edit`, default 4 for new services). The entry node keeps N parallel multiplexed TCP connections to the first hop and spreads streams across them round-robin. On lossy long-distance paths a single TCP connection has a low throughput ceiling, so several sessions raise total throughput while keeping the fast stream setup of multiplexing
+- Existing services keep one session until changed with `multitunnel edit NAME --mux-sessions N` (only needed on the entry node)
+- Service summary shows the number of mux sessions
+
 ## 2.2.1
 
 - Fixed: generated configs were written as `root:root`, so the unprivileged `mtunnel` service user could not read them and the service crash-looped with `permission denied`. Configs are now `root:mtunnel 0640` after every write, rebuild, rollback and restore

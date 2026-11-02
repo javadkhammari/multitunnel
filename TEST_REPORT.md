@@ -1,10 +1,10 @@
-# Test Report: MultiTunnel Relay Manager 2.2.1
+# Test Report: MultiTunnel Relay Manager 2.3.0
 
 Date: 2026-10-31
 
 ## Automated tests
 
-`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 21 unit and CLI integration tests. All passed.
+`tests/run_all.sh`: Python bytecode compilation, Bash syntax check of the installer, and 26 unit and CLI integration tests. All passed.
 
 Coverage includes:
 
@@ -21,6 +21,8 @@ Coverage includes:
 - `show` hides secrets, `show --json` keeps them, and piped output has no ANSI codes
 - Generated configs are readable by the unprivileged service group
 - A unit that crashes shortly after start is reported as failed
+- Mux sessions: N parallel nodes on the first hop for `mtls`/`mwss`, one for other transports, validation limits
+- With the real GOST binary, `--mux-sessions 4` and `8` open exactly 4 and 8 tunnel connections and spread client streams evenly across them
 - FRP mutual TLS, wire protocol v2 and QUIC option placement
 - Managed-port conflict detection
 - systemd hardening sections

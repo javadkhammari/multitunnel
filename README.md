@@ -174,7 +174,16 @@ With `--load-balance` you can import the same final bundle on several final serv
 | OpenVPN TCP without TCP-over-TCP | GOST `quic`, `kcp`, `dtls` · FRP `quic`, `kcp` |
 | Traffic that looks like web traffic | GOST `wss`, `mwss` |
 | Stable TCP path | GOST `tls`, `mtls` · FRP `tcp` with mutual TLS |
+| High-latency or lossy path with many users | GOST `mtls` or `mwss` with `--mux-sessions 4` (or more) |
 | Xray | `--payload tcp` or `--payload udp` to match the inbound. Set `--final-local-port` to the port Xray listens on. |
+
+**Mux sessions.** `mtls` and `mwss` multiplex many user connections over one TCP connection, which makes new connections fast. On long, lossy routes a single TCP connection has a low speed ceiling, so the entry node can keep several multiplexed connections in parallel:
+
+```bash
+multitunnel edit NAME --mux-sessions 4    # run on the entry node
+```
+
+New `mtls`/`mwss` services use 4 sessions by default.
 
 FRP `wss` is not offered on purpose. frps cannot terminate WSS on its own port without an external TLS reverse proxy, so FRP uses `websocket` with mutual TLS instead.
 

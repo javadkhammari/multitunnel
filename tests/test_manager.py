@@ -150,6 +150,47 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("failed to stay active", str(ctx.exception))
 
 
+class MuxSessionTests(unittest.TestCase):
+    def _service(self, transport, sessions=None, hops=None):
+        svc = {
+            "name": "x", "engine": "gost", "payload": "tcp", "transport": transport,
+            "listen_port": 443, "tunnel_port": 8443, "final_local_ip": "127.0.0.1", "final_local_port": 443,
+            "hops": hops or [["203.0.113.20"]], "auth_user": "u", "auth_secret": "s",
+            "server_name": None, "ws_path": "/w", "kcp_profile": "balanced", "pki_dir": "/tmp/pki",
+        }
+        if sessions is not None:
+            svc["mux_sessions"] = sessions
+        return svc
+
+    def _nodes(self, svc, hop=0):
+        cfg = mt.build_gost_config("entry", svc)
+        return cfg["chains"][0]["hops"][hop]["nodes"]
+
+    def test_mtls_sessions_create_parallel_nodes(self):
+        nodes = self._nodes(self._service("mtls", 4))
+        self.assertEqual(len(nodes), 4)
+        self.assertEqual({n["addr"] for n in nodes}, {"203.0.113.20:8443"})
+        self.assertEqual(len({n["name"] for n in nodes}), 4)
+
+    def test_old_services_without_field_keep_one_session(self):
+        self.assertEqual(len(self._nodes(self._service("mtls"))), 1)
+
+    def test_non_mux_transports_ignore_sessions(self):
+        self.assertEqual(len(self._nodes(self._service("tls", 4))), 1)
+        self.assertEqual(len(self._nodes(self._service("quic", 4))), 1)
+
+    def test_sessions_apply_to_first_hop_only(self):
+        svc = self._service("mwss", 3, hops=[["198.51.100.10"], ["203.0.113.20", "203.0.113.21"]])
+        self.assertEqual(len(self._nodes(svc, 0)), 3)
+        self.assertEqual(len(self._nodes(svc, 1)), 2)
+
+    def test_sessions_validation(self):
+        self.assertEqual(mt.valid_mux_sessions("8"), 8)
+        for bad in (0, 17, "x"):
+            with self.assertRaises(mt.MTMError):
+                mt.valid_mux_sessions(bad)
+
+
 def _group_exists(name):
     import grp
     try:
