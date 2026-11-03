@@ -284,6 +284,10 @@ sudo multitunnel uninstall --purge   # remove engines, configs and PKI
 
 See [SECURITY.md](SECURITY.md) for how to handle bundles and backups.
 
+## Related project
+
+[wg2raw](https://github.com/javadkhammari/wg2raw) sets up a WireGuard tunnel wrapped in fake TCP with udp2raw, from a single one-line connection code. It is a good fit when UDP is blocked or throttled and you only need one point-to-point link.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
